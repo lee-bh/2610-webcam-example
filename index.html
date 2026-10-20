@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hand Landmark - MediaPipe</title>
+  <style>
+    * { margin: 0; padding: 0; }
+    body { background: #111; overflow: hidden; }
+    video { display: none; }
+    canvas { display: block; width: 100vw; height: 100vh; cursor: pointer; transform: scaleX(-1); }
+  </style>
+</head>
+<body>
+  <video id="video" autoplay playsinline></video>
+  <canvas id="canvas"></canvas>
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/hands.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1675466862/camera_utils.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils@0.3.1675466124/drawing_utils.min.js"></script>
+  <script>
+    const video = document.getElementById('video');
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+
+    function resize() {
+      canvas.width = window.innerWidth;
+      canvas.height = window.innerHeight;
+    }
+    resize();
+    window.addEventListener('resize', resize);
+
+    const hands = new Hands({
+      locateFile: file => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/${file}`
+    });
+
+    hands.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
+
+    // 스케치 데이터: 여러 획(stroke)을 저장
+    const strokes = [];   // 완료된 획들
+    let currentStroke = []; // 현재 그리고 있는 획
+    let isDrawing = false;
+
+    // 손가락이 펴져 있는지 판별 (tip이 PIP보다 위에 있으면 펴진 것)
+    function isFingerExtended(landmarks, tipIdx, pipIdx) {
+      return landmarks[tipIdx].y < landmarks[pipIdx].y;
+    }
+
+    function detectGesture(landmarks) {
+      const indexUp  = isFingerExtended(landmarks, 8, 6);
+      const middleUp = isFingerExtended(landmarks, 12, 10);
+      const ringUp   = isFingerExtended(landmarks, 16, 14);
+      const pinkyUp  = isFingerExtended(landmarks, 20, 18);
+
+      // Pointing up: 검지만 펴고 나머지 접기
+      if (indexUp && !middleUp && !ringUp && !pinkyUp) return 'pointing';
+      // Fist: 모든 손가락 접기
+      if (!indexUp && !middleUp && !ringUp && !pinkyUp) return 'fist';
+      return 'other';
+    }
+
+    hands.onResults(results => {
+      const W = canvas.width;
+      const H = canvas.height;
+
+      // 배경 그리기
+      ctx.fillStyle = '#111';
+      ctx.fillRect(0, 0, W, H);
+
+      // 저장된 모든 획 그리기
+      ctx.strokeStyle = '#ff3333';
+      ctx.lineWidth = 20;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      for (const stroke of strokes) {
+        if (stroke.length < 2) continue;
+        ctx.beginPath();
+        ctx.moveTo(stroke[0].x, stroke[0].y);
+        for (let i = 1; i < stroke.length; i++) ctx.lineTo(stroke[i].x, stroke[i].y);
+        ctx.stroke();
+      }
+      // 현재 그리는 중인 획
+      if (currentStroke.length >= 2) {
+        ctx.beginPath();
+        ctx.moveTo(currentStroke[0].x, currentStroke[0].y);
+        for (let i = 1; i < currentStroke.length; i++) ctx.lineTo(currentStroke[i].x, currentStroke[i].y);
+        ctx.stroke();
+      }
+
+      // 손 랜드마크 & 제스처 처리
+      if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+        const landmarks = results.multiHandLandmarks[0];
+
+        // 랜드마크 그리기
+        drawConnectors(ctx, landmarks, HAND_CONNECTIONS, { color: '#00FF00', lineWidth: 3 });
+        drawLandmarks(ctx, landmarks, { color: '#FF0000', lineWidth: 1, radius: 4 });
+
+        const gesture = detectGesture(landmarks);
+
+        if (gesture === 'pointing') {
+          // 검지 끝(landmark 8) 좌표를 캔버스 크기에 맞게 변환
+          const tip = landmarks[8];
+          const x = tip.x * W;
+          const y = tip.y * H;
+          currentStroke.push({ x, y });
+          isDrawing = true;
+        } else if (gesture === 'fist') {
+          // 주먹 → 모든 획 지우기
+          strokes.length = 0;
+          currentStroke = [];
+          isDrawing = false;
+        } else {
+          // 다른 제스처 → 현재 획 저장 후 대기
+          if (isDrawing && currentStroke.length > 0) {
+            strokes.push([...currentStroke]);
+            currentStroke = [];
+          }
+          isDrawing = false;
+        }
+      }
+    });
+
+    // 클릭하면 카메라 시작
+    let started = false;
+    canvas.addEventListener('click', () => {
+      if (started) return;
+      started = true;
+      const camera = new Camera(video, {
+        onFrame: async () => { await hands.send({ image: video }); },
+        width: 1280,
+        height: 720
+      });
+      camera.start();
+    });
+
+    // 시작 안내 텍스트
+    ctx.fillStyle = '#111';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#555';
+    ctx.font = '20px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('화면을 클릭하면 시작합니다', canvas.width / 2, canvas.height / 2);
+  </script>
+</body>
+</html>
